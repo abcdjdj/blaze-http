@@ -10,6 +10,8 @@
 
 #include <errno.h>
 
+#include "C-Thread-Pool/thpool.h"
+
 #define PORTNO 8080
 #define LOCALHOST "127.0.0.1"
 
@@ -38,60 +40,62 @@ ssize_t readFile(char *fileName, char **buf)
     return fileSize;
 }
 
-int main(void)
+
+void serviceRequest(void *threadID)
 {
-    int sockfd, clientSockFD;
+    fprintf(stdout, "Hello from thead %d\n", *(int *)threadID);
 
-    struct sockaddr_in serverSocket, clientSocket;
+    // TODO: Service code here
 
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    serverSocket.sin_addr.s_addr = inet_addr(LOCALHOST);
-    serverSocket.sin_port = htons(PORTNO);
-    serverSocket.sin_family = AF_INET;
+    fprintf(stdout, "Terminating %d\n", *(int *)threadID);
+    free(threadID);
+}
 
-    int ret = bind(sockfd, (struct sockaddr*)&serverSocket, sizeof(serverSocket));
+void threadPoolInit(threadpool *pool)
+{
+    *pool = thpool_init(4); // TODO: Get nproc?
+    if(pool == NULL) {
+        fprintf(stderr, "[%s] Error initializing thread pool\n", __func__);
+        return;
+    }
+}
+
+int socketInit(struct sockaddr_in *serverSocket, int *sockFD)
+{
+    *sockFD = socket(AF_INET, SOCK_STREAM, 0);
+    serverSocket->sin_addr.s_addr = inet_addr(LOCALHOST);
+    serverSocket->sin_port = htons(PORTNO);
+    serverSocket->sin_family = AF_INET;
+
+    int ret = bind(*sockFD, (struct sockaddr*)serverSocket, sizeof(struct sockaddr_in));
     if(ret != 0) {
         fprintf(stderr, "[%s] Error in bind() - %s\n", __func__, strerror(errno));
         return ret;
     }
 
-    listen(sockfd, 5);
+    listen(*sockFD, 5);
+}
 
+int main(void)
+{
+    struct sockaddr_in serverSocket;
+    int sockFD;
+    socketInit(&serverSocket, &sockFD);
+
+
+    threadpool pool;
+    threadPoolInit(&pool);
+
+    struct sockaddr_in clientSocket;
     int reqCount = 0;
     while(1) {
-        socklen_t size_client = sizeof(clientSocket);
+        socklen_t size_client = sizeof(struct sockaddr_in);
 
         printf("Waiting for a client..\n");
-        clientSockFD = accept(sockfd, (struct sockaddr*)&clientSocket, &size_client);
+        int clientSockFD = accept(sockFD, (struct sockaddr*)&clientSocket, &size_client);
 
-        printf("Serving Request #%d\n", ++reqCount);
-        int ret = fork();
-        if(ret == 0) {
-            char http_req[2048];
-            ssize_t reqSize = read(clientSockFD, http_req, sizeof(http_req));
-            http_req[reqSize] = '\0';
-            puts(http_req);
-            
-            /* Handle favicon.ico */
-            if(!strncmp("GET /favicon.ico", http_req, strlen("GET /favicon.ico"))) {
-                char *iconBuf = NULL;
-                ssize_t iconSize = readFile("favicon.ico", &iconBuf);
-                write(clientSockFD, iconBuf, iconSize);
-            } else {
-                char *htmlBuf = NULL;
-                ssize_t htmlSize = readFile("index.html", &htmlBuf);
-
-                const char *htmlStatus = "HTTP/1.1 200 OK\r\n\r\n";
-                //"Content-Type: text/html; charset=UTF-8\r\n"
-
-                write(clientSockFD, htmlStatus, sizeof(char) * strlen(htmlStatus));
-                write(clientSockFD, htmlBuf, htmlSize);
-            }
-
-            close(clientSockFD);
-            return 0;
-        } else {
-            close(clientSockFD);
-        }
+        int *threadID = (int *)malloc(sizeof(int));
+        *threadID = ++reqCount;
+        thpool_add_work(pool, serviceRequest, threadID);
     }
 }
